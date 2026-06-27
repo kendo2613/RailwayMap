@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日本全国 鉄道路線・訪問駅マップ</title>
+    <!-- Tailwind CSS (見た目を簡単に整えるためのライブラリ) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 地図を表示するエリアの高さを画面いっぱいに設定 */
+        #map {
+            height: calc(100vh - 80px);
+            width: 100%;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 m-0 p-0 font-sans">
+
+    <!-- ヘッダーとステータス表示エリア -->
+    <div class="h-[80px] bg-slate-800 text-white flex items-center justify-between px-6 shadow-md">
+        <div>
+            <h1 class="text-xl font-bold">マイ日本全国鉄道マップ</h1>
+            <p class="text-xs text-gray-400">※訪問記録は自動でブラウザ（LocalStorage）に保存されます。バックアップや移行の際は「データを保存」をご利用ください。</p>
+        </div>
+        <div class="flex items-center gap-4">
+            <!-- 訪問状況メーター -->
+            <div class="bg-slate-700 px-4 py-2 rounded">
+                <span class="text-sm text-gray-300">全国制覇状況:</span>
+                <span id="stats" class="font-bold text-lg ml-2 text-emerald-400">0 / 0 駅</span>
+            </div>
+
+            <!-- ファイル操作（インポート・エクスポート）ボタン -->
+            <div class="flex items-center gap-2 bg-slate-700 p-1 rounded">
+                <!-- エクスポートボタン -->
+                <button onclick="exportVisits()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-xs transition" title="現在の訪問データをファイルに保存します">
+                    データを保存 (.json)
+                </button>
+                
+                <!-- インポートボタン（隠しinputを起動） -->
+                <button onclick="document.getElementById('importFile').click()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs transition" title="保存したファイルを読み込みます">
+                    データを復元
+                </button>
+                <input type="file" id="importFile" accept=".json" onchange="importVisits(event)" class="hidden">
+            </div>
+
+            <!-- APIキー設定ボタン -->
+            <button onclick="openApiKeyModal()" class="bg-slate-600 hover:bg-slate-500 text-white px-3 py-2 rounded text-sm transition" title="Google Maps APIキーを設定・変更します">
+                ⚙️ キー設定
+            </button>
+
+            <!-- リセットボタン -->
+            <button onclick="resetData()" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded text-sm transition">
+                リセット
+            </button>
+        </div>
+    </div>
+
+    <!-- 地図を表示するコンテナ -->
+    <div id="map"></div>
+
+    <!-- 
+      APIキー設定用モーダル
+      起動時にAPIキーが未登録の場合、または「キー設定」ボタンが押されたときに表示されます。
+    -->
+    <div id="apiKeyModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[9999] hidden">
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 m-4">
+            <h2 class="text-lg font-bold text-gray-800 mb-2">Google Maps APIキーの設定</h2>
+            <p class="text-xs text-gray-500 mb-4">
+                GitHub等の公開環境で安全に動作させるため、APIキーはソースコードに書き込まず、このブラウザのみに安全に保存（LocalStorage）して利用します。
+            </p>
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">APIキーを入力してください</label>
+                <input type="password" id="apiKeyInput" class="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="AIzaSy...">
+            </div>
+            <div class="flex justify-end gap-2 text-sm">
+                <button onclick="closeApiKeyModal()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-4 py-2 rounded transition">
+                    キャンセル
+                </button>
+                <button onclick="saveApiKey()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded transition font-medium">
+                    保存して再読み込み
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 
+      切り出した駅データベースを先に読み込みます。
+      index.html と同じフォルダ（ディレクトリ）に stations.js を置いてください。
+    -->
+    <script src="stations.js"></script>
+
+    <script>
+        let map;
+        // 画面上に実際に生成されている Google Maps の Marker オブジェクトを管理（キー：駅のID）
+        let activeMarkers = {};
+        
+        // 【LocalStorage復活】初期状態のロードをLocalStorageから試みる
+        let visitedState = {};
+
+        // 起動時にデータを読み込むメイン処理
+        async function loadInitialVisits() {
+            // 1. まずブラウザのLocalStorageからデータを読み込む
+            const savedData = localStorage.getItem('myStationVisits');
+            if (savedData) {
+                try {
+                    visitedState = JSON.parse(savedData);
+                    console.log("LocalStorageから訪問履歴をロードしました:", visitedState);
+                    return; // LocalStorageにデータがあれば完了
+                } catch (e) {
+                    console.error("LocalStorageデータのパースに失敗しました。デフォルトファイルの読み込みを試みます。", e);
+                }
+            }
+
+            // 2. LocalStorageにデータが無い場合、default_visits.json の読み込みを試みる
+            try {
+                const response = await fetch('default_visits.json');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data && typeof data === 'object') {
+                        visitedState = data;
+                        // 初回読み込みしたデフォルトデータをLocalStorageにも保存しておく
+                        localStorage.setItem('myStationVisits', JSON.stringify(visitedState));
+                        console.log("default_visits.json からデフォルトの訪問履歴をロードしました:", visitedState);
+                    }
+                } else {
+                    console.warn("default_visits.json がフォルダ内に見つかりません。まっさらな状態で開始します。");
+                }
+            } catch (error) {
+                // ローカル起動によるCORS制限などのフォールバック
+                console.warn("ローカル環境の制限等によりデフォルトファイルの自動ロードをスキップしました。まっさらな状態で開始します。");
+            }
+        }
+
+        // 起動時およびAPIキーロードのエントリーポイント
+        window.onload = function() {
+            checkAndLoadGoogleMaps();
+        };
+
+        // APIキーの確認とGoogle Maps APIの動的ロード
+        function checkAndLoadGoogleMaps() {
+            const savedKey = localStorage.getItem('googleMapsApiKey');
+            if (!savedKey) {
+                // APIキーが登録されていなければ、設定モーダルを表示してマップ読み込みを待機する
+                openApiKeyModal();
+            } else {
+                // 保存されたキーを使って動的にGoogle Mapsのスクリプトをロード
+                const script = document.createElement('script');
+                script.src = `https://maps.googleapis.com/maps/api/js?key=${savedKey}&callback=initMap`;
+                script.async = true;
+                script.defer = true;
+                document.head.appendChild(script);
+            }
+        }
+
+        // 地図の初期化関数
+        async function initMap() {
+            // 地図をすっきり見せるためのカスタムスタイル設定
+            const customMapStyle = [
+                { elementType: "geometry", stylers: [{ color: "#ebe3cd" }] },
+                { featureType: "water", elementType: "geometry", stylers: [{ color: "#b9d3c2" }] },
+                { elementType: "labels.icon", stylers: [{ visibility: "off" }] },
+                { featureType: "road", elementType: "geometry", stylers: [{ color: "#f0ead6" }] },
+                { featureType: "administrative.province", elementType: "geometry.stroke", stylers: [{ visibility: "on" }, { color: "#a39b8b" }, { weight: 1.5 }] },
+                { featureType: "poi", stylers: [{ visibility: "off" }] },
+                { featureType: "transit.line", elementType: "geometry", stylers: [{ visibility: "on" }, { color: "#9ca3af" }, { weight: 2 }] },
+                { featureType: "transit.station.rail", elementType: "labels.icon", stylers: [{ visibility: "on" }] }
+            ];
+
+            // 初期位置を東京駅周辺の拡大表示（ズーム12）に設定
+            map = new google.maps.Map(document.getElementById("map"), {
+                center: { lat: 35.681236, lng: 139.767125 }, // 東京駅周辺
+                zoom: 12,                          // 駅がはっきり見えるズームレベル
+                styles: customMapStyle,
+                mapTypeControl: false
+            });
+
+            // 地図描画の前に、初期訪問データを自動でロードする（非同期待機）
+            await loadInitialVisits();
+
+            // ブラウザの機能を使って現在地を取得する
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const currentPos = {
+                            lat: position.coords.latitude,
+                            lng: position.coords.longitude
+                        };
+                        // 地図の中心を現在地へ移動
+                        map.setCenter(currentPos);
+                        // 駅のピンが見やすくなる適切なズームレベル（12）に変更
+                        map.setZoom(12);
+                    },
+                    (error) => {
+                        console.warn("現在地の取得に失敗しました。デフォルトの表示位置（東京周辺）を使用します。理由:", error.message);
+                    }
+                );
+            } else {
+                console.warn("お使いのブラウザは位置情報サービス（Geolocation）に対応していません。デフォルトの位置（東京周辺）を使用します。");
+            }
+
+            // 地図の移動やズームが終わった（idle）タイミングで、画面内にある駅だけを描画する
+            map.addListener("idle", () => {
+                updateVisibleMarkers();
+            });
+
+            // 初回の駅数カウントの更新
+            updateStats();
+        }
+
+        // 現在の地図の表示範囲（Viewport）に入っている駅だけを動的に生成・削除する関数
+        // ズームレベルに応じて高密度な未訪問駅および訪問済み駅を間引く（高速化 & 視認性向上）
+        function updateVisibleMarkers() {
+            if (!map || !stations) return;
+
+            const bounds = map.getBounds();
+            if (!bounds) return;
+
+            const zoom = map.getZoom();
+
+            // ズームレベルに応じた間引き判定用グリッドサイズ（緯度・経度の度数基準）
+            let gridSize = 0;
+            if (zoom >= 11) {
+                gridSize = 0;       // 間引きなし（すべて表示）
+            } else if (zoom >= 9) {
+                gridSize = 0.04;    // 約4km四方に最大1つの駅を表示
+            } else if (zoom >= 7) {
+                gridSize = 0.15;    // 約15km四方に最大1つの駅を表示
+            } else {
+                gridSize = 0.50;    // 約50km四方に最大1つの駅を表示
+            }
+
+            // どのグリッド座標がすでに「占有」されたかを追跡するセット
+            const occupiedGrids = new Set();
+
+            // 訪問済みの駅が優先的にグリッドを占有（＝優先表示）されるように、あらかじめソートしておく
+            const sortedStations = [...stations].sort((a, b) => {
+                const aVisited = !!visitedState[a.id];
+                const bVisited = !!visitedState[b.id];
+                if (aVisited && !bVisited) return -1; // 訪問済みを優先して配列の前に配置
+                if (!aVisited && bVisited) return 1;
+                return 0;
+            });
+
+            // すべての駅をチェックし、各マーカーの表示・非表示を決定する一時マップ（処理のブレを防ぐため）
+            const markerVisibilityMap = {};
+
+            sortedStations.forEach(station => {
+                const latLng = new google.maps.LatLng(station.lat, station.lng);
+                const isWithinBounds = bounds.contains(latLng);
+                const isVisited = !!visitedState[station.id];
+
+                let shouldShow = isWithinBounds;
+
+                // 画面内にあり、かつ間引きが有効な場合
+                if (isWithinBounds && gridSize > 0) {
+                    // 緯度・経度をグリッドサイズで割り、エリアキーを算出
+                    const gridX = Math.floor(station.lng / gridSize);
+                    const gridY = Math.floor(station.lat / gridSize);
+                    const gridKey = `${gridX}_${gridY}`;
+
+                    if (occupiedGrids.has(gridKey)) {
+                        shouldShow = false; // すでにこのグリッドは別の駅（優先度により訪問済み駅など）に占有されているため非表示にする
+                    } else {
+                        occupiedGrids.add(gridKey); // このグリッドは占有されたとマーク
+                    }
+                }
+
+                markerVisibilityMap[station.id] = shouldShow;
+            });
+
+            // ソート順ではなく、オリジナルの stations 順で最終的にピンの生成・削除処理を行う
+            stations.forEach(station => {
+                const shouldShow = markerVisibilityMap[station.id];
+                const isVisited = !!visitedState[station.id];
+                const hasMarker = !!activeMarkers[station.id];
+
+                if (shouldShow) {
+                    // 表示すべきであり、まだマーカーがない場合は新しく作成
+                    if (!hasMarker) {
+                        const marker = new google.maps.Marker({
+                            position: { lat: station.lat, lng: station.lng },
+                            map: map,
+                            title: station.name,
+                            icon: getMarkerIcon(isVisited)
+                        });
+
+                        // ピンのクリックイベント
+                        marker.addListener("click", () => {
+                            visitedState[station.id] = !visitedState[station.id];
+                            
+                            // 【LocalStorage復活】メモリ上の値を更新したあと、LocalStorageにも即時自動保存
+                            localStorage.setItem('myStationVisits', JSON.stringify(visitedState));
+                            
+                            marker.setIcon(getMarkerIcon(visitedState[station.id]));
+                            
+                            // 訪問ステータスが変わると優先間引きの計算順位が変わるため、即時再計算して反映
+                            updateVisibleMarkers();
+                            updateStats();
+                        });
+
+                        activeMarkers[station.id] = marker;
+                    } else {
+                        // すでにマーカーがある場合でも、最新の訪問状況（赤／青）をアイコンに同期
+                        activeMarkers[station.id].setIcon(getMarkerIcon(isVisited));
+                    }
+                } else {
+                    // 非表示にするべきで、現在マーカーが表示されている場合は削除してメモリ解放
+                    if (hasMarker) {
+                        activeMarkers[station.id].setMap(null);
+                        delete activeMarkers[station.id];
+                    }
+                }
+            });
+        }
+
+        // 訪問状態に応じてピンの形と色を返す関数
+        function getMarkerIcon(visited) {
+            return {
+                path: google.maps.SymbolPath.CIRCLE,
+                fillColor: visited ? "#ef4444" : "#3b82f6", // 行った:赤 / 行ってない:青
+                fillOpacity: 0.8,
+                strokeColor: "#ffffff",
+                strokeWeight: 2,
+                scale: 5
+            };
+        }
+
+        // 訪問駅数を計算して画面に表示する関数
+        function updateStats() {
+            if (!stations) return;
+            let visitedCount = 0;
+            stations.forEach(station => {
+                if (visitedState[station.id]) {
+                    visitedCount++;
+                }
+            });
+            document.getElementById("stats").textContent = `${visitedCount} / ${stations.length} 駅`;
+        }
+
+        // ==========================================
+        // データのインポート／エクスポート処理
+        // ==========================================
+
+        // 1. エクスポート：現在の訪問記録を JSON ファイルとしてダウンロード
+        function exportVisits() {
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(visitedState, null, 2));
+            const downloadAnchor = document.createElement('a');
+            downloadAnchor.setAttribute("href", dataStr);
+            const dateStr = new Date().toISOString().slice(0, 10);
+            downloadAnchor.setAttribute("download", `my_railway_visits_${dateStr}.json`);
+            document.body.appendChild(downloadAnchor);
+            downloadAnchor.click();
+            downloadAnchor.remove();
+        }
+
+        // 2. インポート：PC・スマホ上の JSON ファイルを読み込んでLocalStorageおよび地図に反映
+        function importVisits(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const importedData = JSON.parse(e.target.result);
+                    if (typeof importedData === 'object' && importedData !== null) {
+                        visitedState = importedData;
+                        
+                        // 【LocalStorage復活】インポートしたデータをブラウザのLocalStorageに完全同期
+                        localStorage.setItem('myStationVisits', JSON.stringify(visitedState));
+                        
+                        // 既存の表示中マーカーを全て一度クリア
+                        Object.keys(activeMarkers).forEach(id => {
+                            activeMarkers[id].setMap(null);
+                        });
+                        activeMarkers = {};
+                        
+                        // 再描画とステータス更新
+                        updateVisibleMarkers();
+                        updateStats();
+                        alert("訪問記録の復元と自動保存の同期が完了しました！");
+                    } else {
+                        alert("不正なファイルフォーマットです。");
+                    }
+                } catch (err) {
+                    alert("ファイルの読み込み中にエラーが発生しました。");
+                }
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        }
+
+        // 全ての記録をリセットする関数
+        function resetData() {
+            if(confirm("全ての訪問記録をリセットしますか？\n（リセットする前にファイルをダウンロードして保存しておくことをお勧めします）")) {
+                visitedState = {};
+                
+                // 【LocalStorage復活】LocalStorageのデータも完全にクリアします
+                localStorage.removeItem('myStationVisits');
+                
+                // 既存のマーカーをすべて削除
+                Object.keys(activeMarkers).forEach(id => {
+                    activeMarkers[id].setMap(null);
+                });
+                activeMarkers = {};
+                updateVisibleMarkers();
+                updateStats();
+            }
+        }
+
+        // ==========================================
+        // APIキー用モーダル・UI操作処理
+        // ==========================================
+        function openApiKeyModal() {
+            const savedKey = localStorage.getItem('googleMapsApiKey') || '';
+            document.getElementById('apiKeyInput').value = savedKey;
+            document.getElementById('apiKeyModal').classList.remove('hidden');
+        }
+
+        function closeApiKeyModal() {
+            // APIキーが一度も保存されていない場合は閉じるのを防ぐ（マップが動作しないため）
+            const savedKey = localStorage.getItem('googleMapsApiKey');
+            if (!savedKey) {
+                alert("マップを表示するには、Google Maps APIキーの設定が必要です。");
+                return;
+            }
+            document.getElementById('apiKeyModal').classList.add('hidden');
+        }
+
+        function saveApiKey() {
+            const inputKey = document.getElementById('apiKeyInput').value.trim();
+            if (!inputKey) {
+                alert("有効なAPIキーを入力してください。");
+                return;
+            }
+            // LocalStorageに安全に保存
+            localStorage.setItem('googleMapsApiKey', inputKey);
+            document.getElementById('apiKeyModal').classList.add('hidden');
+            
+            // 変更を反映させるため、ページをリロードする
+            window.location.reload();
+        }
+    </script>
+
+</body>
+</html>
