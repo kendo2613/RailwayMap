@@ -7,51 +7,72 @@
     <!-- Tailwind CSS (見た目を簡単に整えるためのライブラリ) -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* 地図を表示するエリアの高さを画面いっぱいに設定 */
+        /* 画面全体をFlexboxに設定し、ヘッダーと地図を隙間なく100vhの中に収めることで、
+          スマホでヘッダーが高くなった際も地図エリアが画面下部にはみ出るのを防ぎます。
+        */
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+        body {
+            display: flex;
+            flex-direction: column;
+        }
         #map {
-            height: calc(100vh - 80px);
+            flex-grow: 1; /* ヘッダー以外の残り領域をすべて埋める */
             width: 100%;
         }
     </style>
 </head>
-<body class="bg-gray-100 m-0 p-0 font-sans">
+<body class="bg-gray-100 font-sans">
 
-    <!-- ヘッダーとステータス表示エリア -->
-    <div class="h-[80px] bg-slate-800 text-white flex items-center justify-between px-6 shadow-md">
-        <div>
-            <h1 class="text-xl font-bold">マイ日本全国鉄道マップ</h1>
-            <p class="text-xs text-gray-400">※訪問記録は自動でブラウザ（LocalStorage）に保存されます。バックアップや移行の際は「データを保存」をご利用ください。</p>
+    <!-- ヘッダーとステータス表示エリア（モバイル対応レスポンシブ設計） -->
+    <div class="bg-slate-800 text-white flex flex-col md:flex-row md:items-center justify-between px-4 py-3 md:py-0 md:h-[80px] shadow-md gap-3 z-10">
+        <div class="flex items-center justify-between">
+            <div>
+                <h1 class="text-base md:text-xl font-bold">マイ日本全国鉄道マップ</h1>
+                <p class="hidden md:block text-xs text-gray-400">※訪問記録は自動でブラウザ（LocalStorage）に保存されます。バックアップや移行の際は「データを保存」をご利用ください。</p>
+            </div>
+            <!-- モバイル表示の時だけタイトルの横に表示する簡易状況表示 -->
+            <div class="md:hidden bg-slate-700 px-3 py-1.5 rounded text-sm font-bold">
+                <span id="stats-mobile" class="text-emerald-400">0 / 0 駅</span>
+            </div>
         </div>
-        <div class="flex items-center gap-4">
-            <!-- 訪問状況メーター -->
-            <div class="bg-slate-700 px-4 py-2 rounded">
+        
+        <div class="flex flex-wrap items-center justify-between md:justify-end gap-2 md:gap-4">
+            <!-- PC用訪問状況メーター（スマホでは非表示にしてスッキリさせます） -->
+            <div class="hidden md:flex items-center bg-slate-700 px-4 py-2 rounded">
                 <span class="text-sm text-gray-300">全国制覇状況:</span>
                 <span id="stats" class="font-bold text-lg ml-2 text-emerald-400">0 / 0 駅</span>
             </div>
 
             <!-- ファイル操作（インポート・エクスポート）ボタン -->
-            <div class="flex items-center gap-2 bg-slate-700 p-1 rounded">
+            <div class="flex items-center gap-1.5 bg-slate-700 p-1 rounded flex-grow md:flex-grow-0 justify-around">
                 <!-- エクスポートボタン -->
-                <button onclick="exportVisits()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-xs transition" title="現在の訪問データをファイルに保存します">
+                <button onclick="exportVisits()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded text-xs transition flex-1 md:flex-none text-center" title="現在の訪問データをファイルに保存します">
                     データを保存 (.json)
                 </button>
                 
                 <!-- インポートボタン（隠しinputを起動） -->
-                <button onclick="document.getElementById('importFile').click()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-xs transition" title="保存したファイルを読み込みます">
+                <button onclick="document.getElementById('importFile').click()" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1.5 rounded text-xs transition flex-1 md:flex-none text-center" title="保存したファイルを読み込みます">
                     データを復元
                 </button>
                 <input type="file" id="importFile" accept=".json" onchange="importVisits(event)" class="hidden">
             </div>
 
-            <!-- APIキー設定ボタン -->
-            <button onclick="openApiKeyModal()" class="bg-slate-600 hover:bg-slate-500 text-white px-3 py-2 rounded text-sm transition" title="Google Maps APIキーを設定・変更します">
-                ⚙️ キー設定
-            </button>
+            <div class="flex items-center gap-1.5 w-full md:w-auto">
+                <!-- APIキー設定ボタン -->
+                <button onclick="openApiKeyModal()" class="bg-slate-600 hover:bg-slate-500 text-white px-3 py-1.5 rounded text-xs md:text-sm transition flex-1 md:flex-none text-center" title="Google Maps APIキーを設定・変更します">
+                    ⚙️ キー設定
+                </button>
 
-            <!-- リセットボタン -->
-            <button onclick="resetData()" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded text-sm transition">
-                リセット
-            </button>
+                <!-- リセットボタン -->
+                <button onclick="resetData()" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-xs md:text-sm transition flex-1 md:flex-none text-center">
+                    リセット
+                </button>
+            </div>
         </div>
     </div>
 
@@ -63,14 +84,14 @@
       起動時にAPIキーが未登録の場合、または「キー設定」ボタンが押されたときに表示されます。
     -->
     <div id="apiKeyModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[9999] hidden">
-        <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 m-4">
-            <h2 class="text-lg font-bold text-gray-800 mb-2">Google Maps APIキーの設定</h2>
+        <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 m-4 text-gray-800">
+            <h2 class="text-lg font-bold mb-2">Google Maps APIキーの設定</h2>
             <p class="text-xs text-gray-500 mb-4">
                 GitHub等の公開環境で安全に動作させるため、APIキーはソースコードに書き込まず、このブラウザのみに安全に保存（LocalStorage）して利用します。
             </p>
             <div class="mb-4">
                 <label class="block text-sm font-medium text-gray-700 mb-1">APIキーを入力してください</label>
-                <input type="password" id="apiKeyInput" class="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="AIzaSy...">
+                <input type="password" id="apiKeyInput" class="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900" placeholder="AIzaSy...">
             </div>
             <div class="flex justify-end gap-2 text-sm">
                 <button onclick="closeApiKeyModal()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-4 py-2 rounded transition">
@@ -94,7 +115,7 @@
         // 画面上に実際に生成されている Google Maps の Marker オブジェクトを管理（キー：駅のID）
         let activeMarkers = {};
         
-        // 【LocalStorage復活】初期状態のロードをLocalStorageから試みる
+        // 初期状態のロードをLocalStorageから試みる
         let visitedState = {};
 
         // 起動時にデータを読み込むメイン処理
@@ -288,7 +309,7 @@
                         marker.addListener("click", () => {
                             visitedState[station.id] = !visitedState[station.id];
                             
-                            // 【LocalStorage復活】メモリ上の値を更新したあと、LocalStorageにも即時自動保存
+                            // メモリ上の値を更新したあと、LocalStorageにも即時自動保存
                             localStorage.setItem('myStationVisits', JSON.stringify(visitedState));
                             
                             marker.setIcon(getMarkerIcon(visitedState[station.id]));
@@ -334,7 +355,10 @@
                     visitedCount++;
                 }
             });
-            document.getElementById("stats").textContent = `${visitedCount} / ${stations.length} 駅`;
+            // PC表示用とモバイル表示用のメーター双方を同時に更新
+            const text = `${visitedCount} / ${stations.length} 駅`;
+            document.getElementById("stats").textContent = text;
+            document.getElementById("stats-mobile").textContent = text;
         }
 
         // ==========================================
@@ -365,7 +389,7 @@
                     if (typeof importedData === 'object' && importedData !== null) {
                         visitedState = importedData;
                         
-                        // 【LocalStorage復活】インポートしたデータをブラウザのLocalStorageに完全同期
+                        // インポートしたデータをブラウザのLocalStorageに完全同期
                         localStorage.setItem('myStationVisits', JSON.stringify(visitedState));
                         
                         // 既存の表示中マーカーを全て一度クリア
@@ -394,7 +418,7 @@
             if(confirm("全ての訪問記録をリセットしますか？\n（リセットする前にファイルをダウンロードして保存しておくことをお勧めします）")) {
                 visitedState = {};
                 
-                // 【LocalStorage復活】LocalStorageのデータも完全にクリアします
+                // LocalStorageのデータも完全にクリアします
                 localStorage.removeItem('myStationVisits');
                 
                 // 既存のマーカーをすべて削除
