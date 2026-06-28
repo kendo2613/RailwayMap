@@ -20,9 +20,15 @@
             display: flex;
             flex-direction: column;
         }
-        #map {
+        #map-container {
+            position: relative;
             flex-grow: 1; /* ヘッダー以外の残り領域をすべて埋める */
             width: 100%;
+            height: 100%;
+        }
+        #map {
+            width: 100%;
+            height: 100%;
         }
     </style>
 </head>
@@ -76,8 +82,17 @@
         </div>
     </div>
 
-    <!-- 地図を表示するコンテナ -->
-    <div id="map"></div>
+    <!-- 地図コンテナ（マップとフローティングGPSボタンを重ねます） -->
+    <div id="map-container">
+        <div id="map"></div>
+        
+        <!-- 現在地トラッキング（GPS）トグルボタン -->
+        <button id="gpsBtn" onclick="toggleTracking()" class="absolute bottom-6 right-6 p-3.5 rounded-full shadow-xl z-20 border border-gray-200 transition-all duration-300 flex items-center justify-center bg-blue-600 text-white hover:bg-blue-700" title="現在地に自動追従する">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M10 2a1 1 0 011 1v1.072A7.001 7.001 0 0115.928 9H17a1 1 0 110 2h-1.072a7.001 7.001 0 01-4.928 4.928V17a1 1 0 11-2 0v-1.072A7.001 7.001 0 014.072 11H3a1 1 0 110-2h1.072A7.001 7.001 0 019 4.072V3a1 1 0 011-1zm-5 8a5 5 0 1110 0 5 5 0 01-10 0z" clip-rule="evenodd" />
+            </svg>
+        </button>
+    </div>
 
     <!-- 
       APIキー設定用モーダル
@@ -104,6 +119,11 @@
         </div>
     </div>
 
+    <!-- カスタムメッセージトースト通知 (ブラウザ標準のalert()廃止に伴うUI対応) -->
+    <div id="toast" class="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900/90 text-white px-4 py-2.5 rounded-lg shadow-2xl text-sm font-medium z-[9999] opacity-0 transition-opacity duration-300 pointer-events-none flex items-center gap-2">
+        <span id="toastMessage">通知メッセージ</span>
+    </div>
+
     <!-- 
       切り出した駅データベースを先に読み込みます。
       index.html と同じフォルダ（ディレクトリ）に stations.js を置いてください。
@@ -117,6 +137,25 @@
         
         // 初期状態のロードをLocalStorageから試みる
         let visitedState = {};
+
+        // GPSトラッキング状態管理変数
+        let userLocationMarker = null; // 現在地マーク
+        let isTracking = true;         // GPS自動追従が有効かどうか
+        let lastUserPosition = null;   // 最後に検知した現在地の座標
+        let watchId = null;            // Geolocationの監視用ID
+
+        // カスタムトーストメッセージの表示
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            const toastMsg = document.getElementById('toastMessage');
+            toastMsg.textContent = message;
+            toast.classList.remove('opacity-0', 'pointer-events-none');
+            toast.classList.add('opacity-100');
+            setTimeout(() => {
+                toast.classList.remove('opacity-100');
+                toast.classList.add('opacity-0', 'pointer-events-none');
+            }, 3000);
+        }
 
         // 起動時にデータを読み込むメイン処理
         async function loadInitialVisits() {
@@ -198,26 +237,13 @@
             // 地図描画の前に、初期訪問データを自動でロードする（非同期待機）
             await loadInitialVisits();
 
-            // ブラウザの機能を使って現在地を取得する
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition(
-                    (position) => {
-                        const currentPos = {
-                            lat: position.coords.latitude,
-                            lng: position.coords.longitude
-                        };
-                        // 地図の中心を現在地へ移動
-                        map.setCenter(currentPos);
-                        // 駅のピンが見やすくなる適切なズームレベル（12）に変更
-                        map.setZoom(12);
-                    },
-                    (error) => {
-                        console.warn("現在地の取得に失敗しました。デフォルトの表示位置（東京周辺）を使用します。理由:", error.message);
-                    }
-                );
-            } else {
-                console.warn("お使いのブラウザは位置情報サービス（Geolocation）に対応していません。デフォルトの位置（東京周辺）を使用します。");
-            }
+            // ユーザーが地図を手動でドラッグし始めたら、追従（トラッキング）モードを自動オフにする
+            map.addListener("dragstart", () => {
+                setTrackingState(false);
+            });
+
+            // 【新機能】ブラウザの機能を使って現在位置をリアルタイム追跡（GPS監視）
+            startLocationTracking();
 
             // 地図の移動やズームが終わった（idle）タイミングで、画面内にある駅だけを描画する
             map.addListener("idle", () => {
@@ -226,6 +252,104 @@
 
             // 初回の駅数カウントの更新
             updateStats();
+        }
+
+        // ==========================================
+        // 【新機能】現在地トラッキング・GPS制御処理
+        // ==========================================
+        function startLocationTracking() {
+            if (navigator.geolocation) {
+                // watchPositionを使って、デバイスの移動に合わせてリアルタイムに座標をキャッチ
+                watchId = navigator.geolocation.watchPosition(
+                    (position) => {
+                        const currentPos = {
+                            lat: position.coords.latitude,
+                            lng: position.coords.longitude
+                        };
+                        lastUserPosition = currentPos;
+
+                        // 現在地マーカーを地図に描画・更新
+                        updateUserLocationMarker(currentPos);
+
+                        // 自動追従が有効な場合は地図の中央を動かす
+                        if (isTracking) {
+                            map.panTo(currentPos);
+                            // 初回のみ駅が確認しやすい12付近のズームにアジャスト
+                            if (map.getZoom() < 10) {
+                                map.setZoom(12);
+                            }
+                        }
+                    },
+                    (error) => {
+                        console.warn("現在地の取得に失敗しました。デフォルトの表示位置（東京周辺）を使用します。理由:", error.message);
+                        showToast("現在地が取得できませんでした（位置情報の設定を確認してください）");
+                    },
+                    {
+                        enableHighAccuracy: true, // 高精度GPSを利用
+                        timeout: 10000,           // タイムアウト10秒
+                        maximumAge: 0             // キャッシュを無効化
+                    }
+                );
+            } else {
+                console.warn("お使いのブラウザは位置情報サービス（Geolocation）に対応していません。");
+                showToast("位置情報サービスに対応していないブラウザです");
+            }
+        }
+
+        // 現在地を示す青い pulsing ドット（マーカー）を作成・更新
+        function updateUserLocationMarker(position) {
+            if (!userLocationMarker) {
+                // Google Maps のシンボルパスを使用して、現在地アイコンを綺麗に描画
+                userLocationMarker = new google.maps.Marker({
+                    position: position,
+                    map: map,
+                    title: "現在地",
+                    zIndex: 9999, // 駅マーカーよりも常に上に表示
+                    icon: {
+                        path: google.maps.SymbolPath.CIRCLE,
+                        fillColor: "#1d4ed8",      // 濃い青
+                        fillOpacity: 0.9,
+                        strokeColor: "#ffffff",    // 白枠
+                        strokeWeight: 2.5,
+                        scale: 7.5
+                    }
+                });
+            } else {
+                userLocationMarker.setPosition(position);
+            }
+        }
+
+        // 自動追従（トラッキング）の状態を設定・UI同期する
+        function setTrackingState(enabled) {
+            isTracking = enabled;
+            const gpsBtn = document.getElementById("gpsBtn");
+            if (isTracking) {
+                // 追従中：青色アクティブスタイル
+                gpsBtn.classList.remove("bg-white", "text-slate-800", "hover:bg-gray-100");
+                gpsBtn.classList.add("bg-blue-600", "text-white", "hover:bg-blue-700");
+                
+                // 有効化した瞬間に現在地にペニング
+                if (lastUserPosition) {
+                    map.panTo(lastUserPosition);
+                    map.setZoom(12);
+                } else {
+                    showToast("GPS信号を受信しています...");
+                }
+            } else {
+                // 自由移動中：白色ニュートラルスタイル
+                gpsBtn.classList.remove("bg-blue-600", "text-white", "hover:bg-blue-700");
+                gpsBtn.classList.add("bg-white", "text-slate-800", "hover:bg-gray-100");
+            }
+        }
+
+        // フローティングGPSボタンが押されたときのトグル処理
+        function toggleTracking() {
+            setTrackingState(!isTracking);
+            if (isTracking) {
+                showToast("現在地への自動追従を開始しました");
+            } else {
+                showToast("自動追従を解除しました（地図を自由に移動できます）");
+            }
         }
 
         // 現在の地図の表示範囲（Viewport）に入っている駅だけを動的に生成・削除する関数
@@ -321,7 +445,7 @@
 
                         activeMarkers[station.id] = marker;
                     } else {
-                        // すでにマーカーがある場合でも、最新の訪問状況（赤／青）をアイコンに同期
+                        // すでにマーカーがある場合でも、最新 of 訪問状況（赤／青）をアイコンに同期
                         activeMarkers[station.id].setIcon(getMarkerIcon(isVisited));
                     }
                 } else {
@@ -375,6 +499,7 @@
             document.body.appendChild(downloadAnchor);
             downloadAnchor.click();
             downloadAnchor.remove();
+            showToast("訪問履歴をファイルに書き出しました！");
         }
 
         // 2. インポート：PC・スマホ上の JSON ファイルを読み込んでLocalStorageおよび地図に反映
@@ -401,12 +526,12 @@
                         // 再描画とステータス更新
                         updateVisibleMarkers();
                         updateStats();
-                        alert("訪問記録の復元と自動保存の同期が完了しました！");
+                        showToast("訪問記録の復旧が完了しました！");
                     } else {
-                        alert("不正なファイルフォーマットです。");
+                        showToast("不正なファイル形式です");
                     }
                 } catch (err) {
-                    alert("ファイルの読み込み中にエラーが発生しました。");
+                    showToast("ファイルのロード中にエラーが発生しました");
                 }
             };
             reader.readAsText(file);
@@ -415,6 +540,7 @@
 
         // 全ての記録をリセットする関数
         function resetData() {
+            // 確認の際はカスタムモーダルに置き換える代わりに確実な組み込み confirm() を維持
             if(confirm("全ての訪問記録をリセットしますか？\n（リセットする前にファイルをダウンロードして保存しておくことをお勧めします）")) {
                 visitedState = {};
                 
@@ -428,6 +554,7 @@
                 activeMarkers = {};
                 updateVisibleMarkers();
                 updateStats();
+                showToast("訪問状況をすべてリセットしました");
             }
         }
 
@@ -444,7 +571,7 @@
             // APIキーが一度も保存されていない場合は閉じるのを防ぐ（マップが動作しないため）
             const savedKey = localStorage.getItem('googleMapsApiKey');
             if (!savedKey) {
-                alert("マップを表示するには、Google Maps APIキーの設定が必要です。");
+                showToast("マップを表示するには、Google Maps APIキーの設定が必要です。");
                 return;
             }
             document.getElementById('apiKeyModal').classList.add('hidden');
@@ -453,7 +580,7 @@
         function saveApiKey() {
             const inputKey = document.getElementById('apiKeyInput').value.trim();
             if (!inputKey) {
-                alert("有効なAPIキーを入力してください。");
+                showToast("有効なAPIキーを入力してください。");
                 return;
             }
             // LocalStorageに安全に保存
