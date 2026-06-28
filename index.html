@@ -69,9 +69,9 @@
             </div>
 
             <div class="flex items-center gap-1.5 w-full md:w-auto">
-                <!-- APIキー設定ボタン -->
-                <button onclick="openApiKeyModal()" class="bg-slate-600 hover:bg-slate-500 text-white px-3 py-1.5 rounded text-xs md:text-sm transition flex-1 md:flex-none text-center" title="Google Maps APIキーを設定・変更します">
-                    ⚙️ キー設定
+                <!-- アプリ設定ボタン (従来のAPIキー単体から拡張) -->
+                <button onclick="openSettingsModal()" class="bg-slate-600 hover:bg-slate-500 text-white px-3 py-1.5 rounded text-xs md:text-sm transition flex-1 md:flex-none text-center" title="各種設定（APIキー・自動訪問距離など）を行います">
+                    ⚙️ アプリ設定
                 </button>
 
                 <!-- リセットボタン -->
@@ -95,25 +95,42 @@
     </div>
 
     <!-- 
-      APIキー設定用モーダル
-      起動時にAPIキーが未登録の場合、または「キー設定」ボタンが押されたときに表示されます。
+      ⚙️ アプリ設定用モーダル (APIキー設定 + 自動訪問判定設定)
     -->
-    <div id="apiKeyModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[9999] hidden">
+    <div id="settingsModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[9999] hidden">
         <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6 m-4 text-gray-800">
-            <h2 class="text-lg font-bold mb-2">Google Maps APIキーの設定</h2>
-            <p class="text-xs text-gray-500 mb-4">
-                GitHub等の公開環境で安全に動作させるため、APIキーはソースコードに書き込まず、このブラウザのみに安全に保存（LocalStorage）して利用します。
-            </p>
+            <h2 class="text-lg font-bold mb-4 flex items-center gap-2 border-b pb-2">
+                <span>⚙️ アプリ環境設定</span>
+            </h2>
+            
+            <!-- 設定項目1: APIキー -->
             <div class="mb-4">
-                <label class="block text-sm font-medium text-gray-700 mb-1">APIキーを入力してください</label>
+                <label class="block text-sm font-bold text-gray-700 mb-1">Google Maps APIキー</label>
                 <input type="password" id="apiKeyInput" class="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900" placeholder="AIzaSy...">
+                <p class="text-[10px] text-gray-500 mt-1">※キーはブラウザにのみ安全に保存されます。</p>
             </div>
-            <div class="flex justify-end gap-2 text-sm">
-                <button onclick="closeApiKeyModal()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-4 py-2 rounded transition">
+
+            <!-- 設定項目2: 現在地自動訪問判定のしきい値距離 -->
+            <div class="mb-6">
+                <label class="block text-sm font-bold text-gray-700 mb-1">現在地からの自動訪問チェックイン</label>
+                <select id="autoVisitDistanceSelect" class="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white">
+                    <option value="0">無効（自動チェックインしない）</option>
+                    <option value="50">50m 以内に近づいたら訪問</option>
+                    <option value="100">100m 以内に近づいたら訪問 (推奨)</option>
+                    <option value="200">200m 以内に近づいたら訪問</option>
+                    <option value="500">500m 以内に近づいたら訪問</option>
+                </select>
+                <p class="text-xs text-gray-500 mt-1.5">
+                    有効にすると、移動中に駅の近くを通った際、その駅を自動で「訪問済み」として赤色に変化させ、記録を自動保存します。
+                </p>
+            </div>
+
+            <div class="flex justify-end gap-2 text-sm border-t pt-4">
+                <button onclick="closeSettingsModal()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-4 py-2 rounded transition">
                     キャンセル
                 </button>
-                <button onclick="saveApiKey()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded transition font-medium">
-                    保存して再読み込み
+                <button onclick="saveSettings()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded transition font-medium">
+                    設定を保存
                 </button>
             </div>
         </div>
@@ -157,6 +174,19 @@
             }, 3000);
         }
 
+        // 2点間の緯度経度から距離(メートル)を計算するハーバサイン(Haversine)公式
+        function getDistanceInMeters(lat1, lon1, lat2, lon2) {
+            const R = 6371000; // 地球の半径 (m)
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = 
+                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
         // 起動時にデータを読み込むメイン処理
         async function loadInitialVisits() {
             // 1. まずブラウザのLocalStorageからデータを読み込む
@@ -186,7 +216,6 @@
                     console.warn("default_visits.json がフォルダ内に見つかりません。まっさらな状態で開始します。");
                 }
             } catch (error) {
-                // ローカル起動によるCORS制限などのフォールバック
                 console.warn("ローカル環境の制限等によりデフォルトファイルの自動ロードをスキップしました。まっさらな状態で開始します。");
             }
         }
@@ -201,7 +230,7 @@
             const savedKey = localStorage.getItem('googleMapsApiKey');
             if (!savedKey) {
                 // APIキーが登録されていなければ、設定モーダルを表示してマップ読み込みを待機する
-                openApiKeyModal();
+                openSettingsModal();
             } else {
                 // 保存されたキーを使って動的にGoogle Mapsのスクリプトをロード
                 const script = document.createElement('script');
@@ -242,7 +271,7 @@
                 setTrackingState(false);
             });
 
-            // 【新機能】ブラウザの機能を使って現在位置をリアルタイム追跡（GPS監視）
+            // ブラウザの機能を使って現在位置をリアルタイム追跡（GPS監視）
             startLocationTracking();
 
             // 地図の移動やズームが終わった（idle）タイミングで、画面内にある駅だけを描画する
@@ -255,7 +284,7 @@
         }
 
         // ==========================================
-        // 【新機能】現在地トラッキング・GPS制御処理
+        // 現在地トラッキング・GPS制御処理
         // ==========================================
         function startLocationTracking() {
             if (navigator.geolocation) {
@@ -271,6 +300,9 @@
                         // 現在地マーカーを地図に描画・更新
                         updateUserLocationMarker(currentPos);
 
+                        // 【新機能】現在地と全駅データの距離チェック（近接自動チェックイン判定）
+                        checkAndTriggerAutoVisits(currentPos);
+
                         // 自動追従が有効な場合は地図の中央を動かす
                         if (isTracking) {
                             map.panTo(currentPos);
@@ -281,7 +313,7 @@
                         }
                     },
                     (error) => {
-                        console.warn("現在地の取得に失敗しました。デフォルトの表示位置（東京周辺）を使用します。理由:", error.message);
+                        console.warn("現在地の取得に失敗しました。理由:", error.message);
                         showToast("現在地が取得できませんでした（位置情報の設定を確認してください）");
                     },
                     {
@@ -299,7 +331,6 @@
         // 現在地を示す青い pulsing ドット（マーカー）を作成・更新
         function updateUserLocationMarker(position) {
             if (!userLocationMarker) {
-                // Google Maps のシンボルパスを使用して、現在地アイコンを綺麗に描画
                 userLocationMarker = new google.maps.Marker({
                     position: position,
                     map: map,
@@ -316,6 +347,47 @@
                 });
             } else {
                 userLocationMarker.setPosition(position);
+            }
+        }
+
+        // 【新機能】現在地と駅との距離をチェックし、指定距離内なら自動で訪問済みにする
+        function checkAndTriggerAutoVisits(currentPos) {
+            // LocalStorageから設定されている判定距離を取得（初期値：100メートル）
+            const rangeStr = localStorage.getItem('autoVisitDistance') || '100';
+            const autoVisitRange = parseInt(rangeStr, 10);
+
+            // 自動訪問が「無効(0)」に設定されている場合はスキップ
+            if (autoVisitRange <= 0 || !stations) return;
+
+            let newlyVisitedNames = [];
+            let stateUpdated = false;
+
+            stations.forEach(station => {
+                // まだ訪問していない駅だけを対象に距離計算
+                if (!visitedState[station.id]) {
+                    const distance = getDistanceInMeters(
+                        currentPos.lat, currentPos.lng,
+                        station.lat, station.lng
+                    );
+
+                    // 指定距離以内に入り込んだ場合
+                    if (distance <= autoVisitRange) {
+                        visitedState[station.id] = true;
+                        newlyVisitedNames.push(station.name);
+                        stateUpdated = true;
+                    }
+                }
+            });
+
+            // 接近して新しく自動訪問に切り替わった駅がある場合
+            if (stateUpdated) {
+                // データを保存して画面をアップデート
+                localStorage.setItem('myStationVisits', JSON.stringify(visitedState));
+                updateVisibleMarkers();
+                updateStats();
+
+                // 接近検知メッセージをトーストでスマートに表示
+                showToast(`🚉 【接近検知】${newlyVisitedNames.join(', ')}駅を自動訪問済みにしました！`);
             }
         }
 
@@ -367,11 +439,11 @@
             if (zoom >= 11) {
                 gridSize = 0;       // 間引きなし（すべて表示）
             } else if (zoom >= 9) {
-                gridSize = 0.04;    // 約4km四方に最大1つの駅を表示
+                gridSize = 0.04;    // 約4km指針内に最大1つの駅を表示
             } else if (zoom >= 7) {
-                gridSize = 0.15;    // 約15km四方に最大1つの駅を表示
+                gridSize = 0.15;    // 約15km指針内に最大1つの駅を表示
             } else {
-                gridSize = 0.50;    // 約50km四方に最大1つの駅を表示
+                gridSize = 0.50;    // 約50km指針内に最大1つの駅を表示
             }
 
             // どのグリッド座標がすでに「占有」されたかを追跡するセット
@@ -445,7 +517,7 @@
 
                         activeMarkers[station.id] = marker;
                     } else {
-                        // すでにマーカーがある場合でも、最新 of 訪問状況（赤／青）をアイコンに同期
+                        // すでにマーカーがある場合でも、最新の訪問状況（赤／青）をアイコンに同期
                         activeMarkers[station.id].setIcon(getMarkerIcon(isVisited));
                     }
                 } else {
@@ -502,7 +574,7 @@
             showToast("訪問履歴をファイルに書き出しました！");
         }
 
-        // 2. インポート：PC・スマホ上の JSON ファイルを読み込んでLocalStorageおよび地図に反映
+        // 2. インポート：JSON ファイルを読み込んでLocalStorageおよび地図に反映
         function importVisits(event) {
             const file = event.target.files[0];
             if (!file) return;
@@ -540,7 +612,6 @@
 
         // 全ての記録をリセットする関数
         function resetData() {
-            // 確認の際はカスタムモーダルに置き換える代わりに確実な組み込み confirm() を維持
             if(confirm("全ての訪問記録をリセットしますか？\n（リセットする前にファイルをダウンロードして保存しておくことをお勧めします）")) {
                 visitedState = {};
                 
@@ -559,36 +630,57 @@
         }
 
         // ==========================================
-        // APIキー用モーダル・UI操作処理
+        // ⚙️ アプリ設定用モーダル・UI操作処理
         // ==========================================
-        function openApiKeyModal() {
+        function openSettingsModal() {
+            // 1. APIキーのセット
             const savedKey = localStorage.getItem('googleMapsApiKey') || '';
             document.getElementById('apiKeyInput').value = savedKey;
-            document.getElementById('apiKeyModal').classList.remove('hidden');
+
+            // 2. 自動訪問判定距離のセット
+            const savedDistance = localStorage.getItem('autoVisitDistance') || '100'; // デフォルトは100m
+            document.getElementById('autoVisitDistanceSelect').value = savedDistance;
+
+            document.getElementById('settingsModal').classList.remove('hidden');
         }
 
-        function closeApiKeyModal() {
+        function closeSettingsModal() {
             // APIキーが一度も保存されていない場合は閉じるのを防ぐ（マップが動作しないため）
             const savedKey = localStorage.getItem('googleMapsApiKey');
             if (!savedKey) {
                 showToast("マップを表示するには、Google Maps APIキーの設定が必要です。");
                 return;
             }
-            document.getElementById('apiKeyModal').classList.add('hidden');
+            document.getElementById('settingsModal').classList.add('hidden');
         }
 
-        function saveApiKey() {
+        function saveSettings() {
+            // 1. APIキーの保存
             const inputKey = document.getElementById('apiKeyInput').value.trim();
             if (!inputKey) {
                 showToast("有効なAPIキーを入力してください。");
                 return;
             }
-            // LocalStorageに安全に保存
+            const oldKey = localStorage.getItem('googleMapsApiKey');
             localStorage.setItem('googleMapsApiKey', inputKey);
-            document.getElementById('apiKeyModal').classList.add('hidden');
-            
-            // 変更を反映させるため、ページをリロードする
-            window.location.reload();
+
+            // 2. 自動訪問判定距離の保存
+            const distanceSelect = document.getElementById('autoVisitDistanceSelect');
+            const selectedDistance = distanceSelect.value;
+            localStorage.setItem('autoVisitDistance', selectedDistance);
+
+            document.getElementById('settingsModal').classList.add('hidden');
+            showToast("設定を安全に保存しました！");
+
+            // APIキーが変更された場合のみリロードして反映、それ以外はGPS処理が自動適用
+            if (oldKey !== inputKey) {
+                window.location.reload();
+            } else {
+                // 自動判定範囲が更新されたため、最新の現在地を使って即座に自動訪問チェックを一回走らせる
+                if (lastUserPosition) {
+                    checkAndTriggerAutoVisits(lastUserPosition);
+                }
+            }
         }
     </script>
 
